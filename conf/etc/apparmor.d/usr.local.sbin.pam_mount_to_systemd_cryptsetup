@@ -1,0 +1,17 @@
+# vim:syntax=apparmor
+#include <tunables/global>
+
+/usr/local/sbin/pam_mount_to_systemd_cryptsetup {
+	#include <abstractions/base>
+	#include <abstractions/dbus>
+
+	/run/systemd/ask-password/ r,
+	/run/systemd/ask-password/** r,
+	/run/systemd/ask-password/sck.* wr,
+	unix (connect) type=dgram addr=@/run/systemd/ask-password/sck.*,
+
+	/usr/bin/systemctl rix,
+	/run/systemd/private wr,
+	unix (connect) type=dgram addr=@/run/systemd/private,
+}
+

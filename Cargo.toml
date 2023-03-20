@@ -1,0 +1,15 @@
+[package]
+name = "pam_mount_to_systemd_cryptsetup"
+version = "0.1.0"
+edition = "2021"
+authors = ["Bill Moyers <billmoyers@fastmail.com>"]
+license = "MIT"
+
+[dependencies]
+inotify = "0.10.0"
+libc = "0.2.140"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
