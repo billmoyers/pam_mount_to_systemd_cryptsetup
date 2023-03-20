@@ -2,7 +2,7 @@
 
 ## Description
 
-This is used in `pam_mount.conf.xml` to mount volumes via `systemd-cryptsetup`
+This is used in `pam_mount.conf.xml` to mount volumes via `systemd`'s `cryptsetup`
 with a stanza like:
 
 ```xml
