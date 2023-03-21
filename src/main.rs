@@ -26,7 +26,17 @@ use inotify::{Inotify, WatchMask, EventMask};
 use libc::{mlock, c_void};
 
 fn show_usage(program_name: String) {
-	eprintln!("{} [-n|--dry-run] [-u|--unmount] [--] MOUNTPOINT", program_name);
+	eprintln!("Send pam_mount password to systemd cryptsetup units.
+
+USAGE:
+    {} [OPTIONS] [--] MOUNTPOINT
+
+OPTIONS:
+    -u, --unmount         `stop` the systemd unit instead `start`ing it
+        --timeout <N>     Timeout in seconds, default is \"10\" (seconds).
+                          0 means wait indefinitely.
+    -V, --verbose         Verbose logging of activity
+", program_name);
 }
 
 /// The directory where systemd places password agent `ask.*` and `sck.*` files per [1].
@@ -209,27 +219,29 @@ fn process_asks(watch_path: &str, for_mount_point: &str, message_buffer: &Vec<u8
 }
 
 fn main() {
-	//TODO: Add a --verbose or --debug flag and suppress output by default.
 	//Parse arguments.
+	let mut timeout_millis = 10000;
 	let mut verbose = false;
-	let mut dry_run = false; //TODO: Implement this.
 	let mut unmount = false;
 	let mut double_dash = false;
 	let mut problem = false;
 	let mut last_arg: Option<String> = None;
-	let mut program_name: Option<String> = None;
-	let mut i = 0;
 	let args: Vec<String> = env::args().collect();
-	for arg in args {
+	if args.len() < 1 {
+		show_usage("".to_string());
+		return;
+	}
+	let program_name = args[0].clone();
+	let mut skip = false;
+	for i in 1..args.len() {
+		if skip {
+			skip = false;
+			continue;
+		}
+		let arg = args[i].clone();
 		if arg.starts_with("-") && !double_dash {
 			match arg.as_str() {
 				"--" => double_dash = true,
-				"-n" | "--dry-run" => if !dry_run { 
-					dry_run = true
-				} else {
-					eprintln!("\"{}\" may only be specified once", arg);
-					problem = true;
-				},
 				"-u" | "--unmount" => if !unmount { 
 					unmount = true
 				} else {
@@ -241,6 +253,18 @@ fn main() {
 				} else {
 					eprintln!("\"{}\" may only be specified once", arg);
 					problem = true;
+				},
+				"--timeout" => {
+					if i+1 < args.len() {
+						match args[i+1].parse::<u64>(){
+							Ok(t) => timeout_millis = t*1000,
+							Err(_) => problem = true,
+						}
+					}
+					else {
+						problem = true;
+					}
+					skip = true;
 				},
 				_ => {
 					eprintln!("Problem at arg={}...", arg);
@@ -259,26 +283,31 @@ fn main() {
 				}
 			}
 		}
-		if i == 0 {
-			program_name = Some(arg.clone());
-		}
-		i += 1;
 	}
 	if problem || last_arg.is_none() {
-		show_usage(program_name.unwrap());
+		show_usage(program_name);
 		return;
+	}
+
+	if verbose {
+		eprintln!("{} version {}", program_name, env!("CARGO_PKG_VERSION"));
 	}
 
 	//Convert the mount point into a systemd unit name.
 	let target_unit = last_arg.unwrap();
 	let mount_point = format!("/{}", &target_unit.replace("-", "/").replace(".mount", "")); //TODO: This could do the wrong thing if a username has a "-" in it, or probably other cases.
 
-	//Spawn a thread which will exit the program after a timeout in case STDIN is never closed by the parent
+	//Spawn a thread which will exit the program after a timeout in case STDIN is never closed by the parent process
 	//or no suitable agent socket can be found.
-	thread::spawn(move || {
-		thread::sleep(time::Duration::from_millis(10000));
-		process::exit(1);
-	});
+	if timeout_millis > 0 {
+		if verbose {
+			eprintln!("Setting a timer to exit after {} milliseconds.", timeout_millis);
+		}
+		thread::spawn(move || {
+			thread::sleep(time::Duration::from_millis(timeout_millis));
+			process::exit(1);
+		});
+	}
 
 	let mut message_buffer = vec![];
 
@@ -292,8 +321,10 @@ fn main() {
 	}
 
 	//Execute systemctl command.
-
 	if !unmount {
+		if verbose {
+			eprintln!("/usr/bin/systemctl start {}", target_unit);
+		}
 		Command::new("/usr/bin/systemctl")
 			.arg("start")
 			.arg(target_unit)
@@ -314,6 +345,9 @@ fn main() {
 		message_buffer.fill(0);
 	}
 	else {
+		if verbose {
+			eprintln!("/usr/bin/systemctl stop {}", target_unit);
+		}
 		Command::new("/usr/bin/systemctl")
 			.arg("stop")
 			.arg(target_unit)
