@@ -14,9 +14,11 @@
 //! The password agent behavior comes from [[1]](https://systemd.io/PASSWORD_AGENTS/).
 
 use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, BufRead};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixDatagram;
+use std::path::Path;
 use std::process::{self, Command};
 use std::thread;
 use std::time;
@@ -128,7 +130,7 @@ fn read_to_agent_message(read: &mut dyn io::Read, verbose: bool) -> io::Result<V
 /// Watch for `systemd` ask password request files being generated. When one appears,
 /// validate that it seems to be correct for the given directory being mounted and if so,
 /// send the password message.
-fn process_asks(watch_path: &str, for_mount_point: &str, message_buffer: &Vec<u8>, verbose: bool) -> io::Result<bool> {
+fn process_asks(watch_path: &str, for_mount_point: &str, message_buffer: &Vec<u8>, verbose: bool, require_socket_owner_uid: u32) -> io::Result<bool> {
 	//[1]: Create an inotify watch on /run/systemd/ask-password, watch for IN_CLOSE_WRITE|IN_MOVED_TO
 	let mut inotify = Inotify::init()
 		.expect("Error while initializing inotify instance");
@@ -146,7 +148,7 @@ fn process_asks(watch_path: &str, for_mount_point: &str, message_buffer: &Vec<u8
 			eprintln!("Reading inotify events...");
 		}
 		let mut buffer = [0; 4096];
-		let events_ret = inotify.read_events(&mut buffer);
+		let events_ret = inotify.read_events_blocking(&mut buffer);
 
 		if let Ok(events) = events_ret {
 			for event in events {
@@ -181,8 +183,24 @@ fn process_asks(watch_path: &str, for_mount_point: &str, message_buffer: &Vec<u8
 								continue;
 							}
 
-							//TODO: Validate that `ask.socket_path` is under `watch_path`
-							//TODO: Validate that `ask.socket_path` is owned by root / requires special privileges per [1].
+							//Validate that `ask.socket_path` is under `watch_path`
+							let sp = Path::new(&ask.socket_path);
+							if !sp.starts_with(watch_path) {
+								if verbose {
+									eprintln!("  Socket={} which is not under {}, ignoring.", ask.socket_path, watch_path);
+								}
+								continue;
+							}
+
+							//Validate that `ask.socket_path` is owned by root / requires special privileges per [1].
+							let stat = fs::metadata(sp)?;
+							if stat.uid() != require_socket_owner_uid {
+								if verbose {
+									eprintln!("  Socket={} is not owned by uid={}, ignoring.", ask.socket_path, require_socket_owner_uid);
+								}
+								continue;
+							}
+							//TODO: When no longer experimental, check: stat.file_type().is_socket_dgram()
 
 							if verbose {
 								eprintln!("  Socket={}", ask.socket_path);
@@ -212,7 +230,6 @@ fn process_asks(watch_path: &str, for_mount_point: &str, message_buffer: &Vec<u8
 		else if let Err(e) = events_ret {
 			eprintln!("{}", e);
 		}
-		thread::sleep(time::Duration::from_millis(100));
 	}
 
 	Ok(true)
@@ -335,7 +352,7 @@ fn main() {
 		//people know what's going on?
 
 		//Check for an agent socket.
-		process_asks(WATCH_PATH, &mount_point, &message_buffer, verbose)
+		process_asks(WATCH_PATH, &mount_point, &message_buffer, verbose, 0)
 			.expect("Error while watching");
 
 		//TODO: See if there's a "secure memory" concept that could be used besides mlock, although really pam_mount
@@ -427,7 +444,9 @@ Message=Please enter passphrase for disk ubuntu--vg-alice (decrypt_alice) on /ho
 
 		thread::spawn(move || {
 			eprintln!("thread calling process_asks");
-			process_asks(tmp_path, "/home/bob", &mbcp, true)
+			let mut uid;
+			unsafe { uid = libc::getuid(); }
+			process_asks(tmp_path, "/home/bob", &mbcp, true, uid)
 				.expect("Failed to watch");
 		});
 		thread::sleep(time::Duration::from_millis(1000));
