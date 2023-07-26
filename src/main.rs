@@ -429,7 +429,9 @@ PID=11112
 Socket=target/test_inotify/sck.test_inotify.2
 Message=Please enter passphrase for disk ubuntu--vg-alice (decrypt_alice) on /home/alice:";
 
-		//TODO: mkdir target/test_inotify
+		std::fs::DirBuilder::new()
+			.recursive(true)
+			.create(tmp_path).unwrap();
 
 		let message_buffer: Vec<u8> = vec![
 			b'+',
@@ -444,7 +446,7 @@ Message=Please enter passphrase for disk ubuntu--vg-alice (decrypt_alice) on /ho
 
 		thread::spawn(move || {
 			eprintln!("thread calling process_asks");
-			let mut uid;
+			let uid;
 			unsafe { uid = libc::getuid(); }
 			process_asks(tmp_path, "/home/bob", &mbcp, true, uid)
 				.expect("Failed to watch");
@@ -499,6 +501,9 @@ Message=Please enter passphrase for disk ubuntu--vg-alice (decrypt_alice) on /ho
 			.expect("set_read_timeout failed");
 		assert!(sock2.recv(buf2.as_mut_slice()).is_err());
 		
-		//TODO: Remove files
+		std::fs::remove_file(ask_path_1).expect("Failed to clean up file");
+		std::fs::remove_file(socket_path_1).expect("Failed to clean up file");
+		std::fs::remove_file(ask_path_2).expect("Failed to clean up file");
+		std::fs::remove_file(socket_path_2).expect("Failed to clean up file");
 	}
 }
